@@ -52,6 +52,42 @@ variable "manage_cloud_run_invoker_iam" {
   default     = true
 }
 
+variable "function_runtime" {
+  description = "Python runtime ID for Cloud Run functions."
+  type        = string
+  default     = "python313"
+}
+
+variable "function_min_instances" {
+  description = "Minimum instances for each Cloud Run function."
+  type        = number
+  default     = 0
+}
+
+variable "function_max_instances" {
+  description = "Maximum instances for each Cloud Run function."
+  type        = number
+  default     = 5
+}
+
+variable "function_memory" {
+  description = "Memory allocated to each Cloud Run function."
+  type        = string
+  default     = "512M"
+}
+
+variable "document_processor_timeout_seconds" {
+  description = "Timeout for the Document AI processor function."
+  type        = number
+  default     = 540
+}
+
+variable "id_cards_timeout_seconds" {
+  description = "Timeout for the id-cards Pub/Sub subscriber function."
+  type        = number
+  default     = 60
+}
+
 locals {
   frontend_image = var.frontend_container_image != "" ? var.frontend_container_image : "gcr.io/${var.project_name}/frontend-app:latest"
   restapi_image  = var.restapi_container_image != "" ? var.restapi_container_image : "gcr.io/${var.project_name}/restapi:latest"

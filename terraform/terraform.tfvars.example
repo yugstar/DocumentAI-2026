@@ -13,5 +13,11 @@ zone         = "us-central1-a"
 # documentai_location     = "us"
 # documentai_processor_id = "PROCESSOR_ID"
 
+# Cloud Run functions use Python 3.13 by default.
+# function_runtime = "python313"
+# function_min_instances = 0
+# function_max_instances = 5
+# function_memory = "512M"
+
 # If your Terraform service account has only roles/editor, Cloud Run invoker IAM will 403 — see GCP-DEPLOY.md.
 # manage_cloud_run_invoker_iam = false

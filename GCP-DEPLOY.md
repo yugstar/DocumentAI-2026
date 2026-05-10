@@ -1,16 +1,16 @@
 # Deploy DocumentAI-2026 on your GCP project
 
-This repository deploys a Document AI processing pipeline with dynamic Cloud Run images, required GCS `location`, required APIs, Python 3.9 functions, an **id-cards** Pub/Sub subscriber source, and a script to build the function ZIPs Terraform expects.
+This repository deploys a Document AI processing pipeline with dynamic Cloud Run images, required GCS `location`, required APIs, Python 3.13 Cloud Run functions, and Terraform-generated function source archives.
 
 ## Architecture
 
-Upload (Cloud Run + Flask) → **GCS** object finalize → **Cloud Function** `document-processor` (Document AI + Firestore + Pub/Sub) → topic **`emp-notification`** → **Cloud Function** `id-cards` (HTTP GET to REST API) → **Cloud Run** `restapi` reads **Firestore** collection `employee`.
+Upload (Cloud Run + Flask) → **GCS** object finalize → **Cloud Run function** `document-processor` (Document AI + Firestore + Pub/Sub) → topic **`emp-notification`** → **Cloud Run function** `id-cards` (HTTP GET to REST API) → **Cloud Run** `restapi` reads **Firestore** collection `employee`.
 
 ## Prerequisites
 
 - A GCP **project** with **billing** enabled.
 - [gcloud](https://cloud.google.com/sdk/docs/install) and [Terraform](https://developer.hashicorp.com/terraform/install) ≥ 1.3.
-- Permissions to enable APIs, create buckets, Cloud Functions, Cloud Run, Pub/Sub, and **IAM policy updates** on the project and on Cloud Run. A service account with only **`roles/editor` cannot run this Terraform as-is** (Editor cannot change IAM). See **§6b** below.
+- Permissions to enable APIs, create buckets, Cloud Run functions, Cloud Run services, Pub/Sub, Eventarc, and **IAM policy updates** on the project and on Cloud Run. A service account with only **`roles/editor` cannot run this Terraform as-is** (Editor cannot change IAM). See **§5b** below.
 
 ## 1. Configure gcloud
 
@@ -30,7 +30,7 @@ Terraform does not create the Firestore database in this repo.
 ## 3. Document AI
 
 - Ensure **Document AI API** is enabled (Terraform enables `documentai.googleapis.com`).
-- The sample function uses the legacy **`google-cloud-documentai` v1beta2** client and `projects/<project>/locations/us` as parent. If `process_document` fails after deploy, you may need a **processor** in that location and to update `Document-processing-function/main.py` to the current Document AI client and processor resource name. See [Document AI documentation](https://cloud.google.com/document-ai/docs).
+- Create or reuse a processor in `documentai_location`, then set `documentai_processor_id` in `terraform.tfvars`. The processor resource looks like `projects/<project>/locations/<location>/processors/<processor_id>`.
 
 ## 4. Build and push Cloud Run images (before first `terraform apply`)
 
@@ -58,18 +58,7 @@ gcloud builds submit ./app/service --tag "gcr.io/${PROJECT_ID}/restapi:latest" -
 
 Optional: use Cloud Build configs with a commit SHA tag, then set `frontend_container_image` and `restapi_container_image` in `terraform.tfvars`.
 
-## 5. Package Cloud Functions (ZIPs)
-
-Terraform uploads `terraform/document-processor.zip` and `terraform/id-cards.zip` from disk. Run from **`app/`** (same as step 4).
-
-```bash
-cd app   # from workspace root, if needed
-./scripts/package-functions.sh
-```
-
-Re-run this after any change under `Document-processing-function/` or `id-cards-function/`.
-
-## 6. Terraform variables
+## 5. Terraform variables
 
 ```bash
 cd terraform
@@ -82,9 +71,11 @@ Authenticate Terraform (pick one):
 - `export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json` for a key, or
 - Application Default Credentials from `gcloud auth application-default login`.
 
-### 6b. Terraform service account — IAM permissions (common 403s)
+Terraform packages `Document-processing-function/` and `id-cards-function/` automatically using the `archive` provider. Generated ZIP files under `terraform/` are ignored by Git.
 
-This stack’s Terraform also creates **project-level IAM** (Artifact Registry reader for the Cloud Functions service agent) and **Cloud Run invoker** bindings for `allUsers`. That requires extra roles beyond **`roles/editor`**.
+### 5b. Terraform service account — IAM permissions (common 403s)
+
+This stack’s Terraform also creates **project-level IAM** for the function runtime account, Eventarc, the Cloud Functions service agent, and **Cloud Run invoker** bindings for `allUsers`. That requires extra roles beyond **`roles/editor`**.
 
 **Option A — grant the Terraform SA enough rights (recommended)**
 As a project **Owner**, run (use the `client_email` from your Terraform key JSON as `TF_SA`):
@@ -105,7 +96,7 @@ gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
 For a personal demo you can instead grant **`roles/owner`** on the project to that SA (avoid in production).
 
 **Option B — keep Editor-only SA; skip only Cloud Run invoker in Terraform**
-Project IAM for the Cloud Functions agent must still be applied by Terraform (or you will get Gen1 build errors); that needs **`roles/resourcemanager.projectIamAdmin`** on the Terraform identity. If you truly cannot grant that, run the Artifact Registry reader binding manually as Owner (same command as below) before functions deploy.
+Project IAM for Cloud Run functions and Eventarc must still be applied by Terraform; that needs **`roles/resourcemanager.projectIamAdmin`** on the Terraform identity. If you truly cannot grant that, apply the project IAM bindings manually as Owner before functions deploy.
 
 In `terraform.tfvars` set:
 
@@ -134,7 +125,7 @@ gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
   --role="roles/artifactregistry.reader"
 ```
 
-## 7. Apply
+## 6. Apply
 
 ```bash
 cd terraform
@@ -145,7 +136,11 @@ terraform apply
 
 Outputs include the **frontend** and **REST** Cloud Run URLs.
 
-## 8. Smoke test
+### Migrating from existing Gen1 functions
+
+This branch replaces Gen1 `google_cloudfunctions_function` resources with Gen2 `google_cloudfunctions2_function` resources using the same function names. If Terraform plans to create the Gen2 functions before deleting the old Gen1 functions and Google reports a name conflict, delete the old Gen1 functions first or remove their old state entries only after confirming they are gone in GCP.
+
+## 7. Smoke test
 
 1. Open the **frontend** URL, upload a PDF that matches the form fields expected in `Document-processing-function/main.py` (e.g. `Employee #:`, `First Name:`, `Last Name:`).
 2. Check **Firestore** → `employee` documents.
@@ -161,7 +156,7 @@ Google’s edge often returns a short body **“Service Unavailable”** (Chrome
    curl -sS -o /dev/null -w "%{http_code}\n" "https://YOUR-FRONTEND-URL/"
    ```
 
-   `403` → missing **Invoker** (`allUsers` or your user). If you set `manage_cloud_run_invoker_iam = false`, run the `gcloud run services add-iam-policy-binding` lines in **§6b Option B**.
+   `403` → missing **Invoker** (`allUsers` or your user). If you set `manage_cloud_run_invoker_iam = false`, run the `gcloud run services add-iam-policy-binding` lines in **§5b Option B**.
    `503` → traffic/revision/container (continue below).
 
 2. **Traffic to latest revision** — Terraform sets `traffic { percent = 100 latest_revision = true }`. Run `terraform apply` after pulling the latest `main.tf`.
@@ -180,7 +175,7 @@ Google’s edge often returns a short body **“Service Unavailable”** (Chrome
 
 5. **Logs** — `gcloud run services logs read frontend-app --region=REGION --project=PROJECT_ID` (and `restapi`). Look for bind errors, import errors, or crash loops.
 
-6. **Firestore / GCS for the default runtime SA** — Terraform adds **`roles/datastore.user`** (project) and **`roles/storage.objectAdmin`** (source bucket) for **`PROJECT_NUMBER-compute@developer.gserviceaccount.com`**. Re-apply if those bindings failed earlier.
+6. **Firestore / GCS IAM** — Terraform adds **`roles/datastore.user`** (project) and **`roles/storage.objectAdmin`** (source bucket) for the default Cloud Run service account, and least-privilege IAM for the dedicated function runtime account. Re-apply if those bindings failed earlier.
 
 ## Security notes (production)
 
@@ -249,19 +244,19 @@ If apply failed partway through, `terraform plan` will show any resources alread
 
 APIs were still enabling while Cloud Run was created (race). This repo adds `depends_on = [module.project_services]` on Cloud Run (and related resources). Re-run `terraform apply`. You can also enable manually: `gcloud services enable run.googleapis.com --project=YOUR_PROJECT_ID`.
 
-### Gen1 Cloud Functions — `gcf-artifacts` / `artifactregistry.repositories.get`
+### Cloud Run functions — `gcf-artifacts` / `artifactregistry.repositories.get`
 
-Gen1 functions use an Artifact Registry repo for build metadata. Terraform now enables `artifactregistry.googleapis.com` and grants the **Cloud Functions service agent** `roles/artifactregistry.reader` (`service-<PROJECT_NUMBER>@gcf-admin-robot.iam.gserviceaccount.com`). Re-run `terraform apply`.
+Cloud Run functions use Artifact Registry during builds. Terraform enables `artifactregistry.googleapis.com` and grants the **Cloud Functions service agent** `roles/artifactregistry.reader` (`service-<PROJECT_NUMBER>@gcf-admin-robot.iam.gserviceaccount.com`). Re-run `terraform apply`.
 
 ### `403 Policy update access denied` (project IAM) or `run.services.setIamPolicy` denied
 
-Your Terraform identity (often a **service account key**) does not have permission to change **project IAM** or **Cloud Run service IAM**. **`roles/editor` alone is not enough.** See **§6b** in this file: add `roles/resourcemanager.projectIamAdmin` and `roles/run.admin` to that SA, or set `manage_cloud_run_invoker_iam` to `false` and run the manual `gcloud run services add-iam-policy-binding` commands there (you still need `roles/resourcemanager.projectIamAdmin` for the Gen1 Artifact Registry IAM binding unless you apply that binding manually as Owner).
+Your Terraform identity (often a **service account key**) does not have permission to change **project IAM** or **Cloud Run service IAM**. **`roles/editor` alone is not enough.** See **§5b** in this file: add `roles/resourcemanager.projectIamAdmin` and `roles/run.admin` to that SA, or set `manage_cloud_run_invoker_iam` to `false` and run the manual `gcloud run services add-iam-policy-binding` commands there.
 
 | Issue | What to check |
 |--------|----------------|
 | Terraform invalid / missing `location` on buckets | Use this repo’s updated `main.tf` (buckets set `location = var.region`). |
 | Cloud Run fails to pull image | Build/push images to the same project and tag as in `terraform.tfvars` / defaults. |
 | Cloud Run / Docker “port” or health check failures | Terraform sets `container_port = 8080`; containers use **Gunicorn** on `$PORT` (default 8080). Do not publish to the wrong container port. |
-| Function deploy fails | Re-run `./scripts/package-functions.sh`; confirm `python39` and dependencies in `Document-processing-function/requirements.txt`. |
+| Function deploy fails | Confirm `function_runtime` is supported in your region and dependencies in each function’s `requirements.txt` install on Python 3.13. |
 | Document AI errors | API enabled, correct location/processor, PDF matches form hints. |
-| `project_id` is None in logs | Gen1 functions: `GOOGLE_CLOUD_PROJECT` / `GCLOUD_PROJECT` fallbacks are handled in `Document-processing-function/main.py`. |
+| `project_id` is None in logs | Terraform sets `PROJECT_ID` in the function environment. Re-apply if the service config did not update. |
