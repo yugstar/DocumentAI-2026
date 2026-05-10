@@ -1,0 +1,17 @@
+# REQUIRED: replace with your real project id (same as `gcloud config get-value project`).
+# Do not leave the old tutorial placeholder or apply will fail with "Unknown project id".
+project_name = "REPLACE-WITH-YOUR-PROJECT-ID"
+region       = "us-central1"
+zone         = "us-central1-a"
+
+# Optional: override Cloud Run images (defaults: gcr.io/<project_name>/frontend-app:latest and .../restapi:latest)
+# frontend_container_image = "gcr.io/REPLACE-WITH-YOUR-PROJECT-ID/frontend-app:abc123"
+# restapi_container_image  = "gcr.io/REPLACE-WITH-YOUR-PROJECT-ID/restapi:abc123"
+
+# Document AI processor used by the document-processor Cloud Function.
+# Create one in the same project, then set the processor ID here.
+# documentai_location     = "us"
+# documentai_processor_id = "PROCESSOR_ID"
+
+# If your Terraform service account has only roles/editor, Cloud Run invoker IAM will 403 — see GCP-DEPLOY.md.
+# manage_cloud_run_invoker_iam = false

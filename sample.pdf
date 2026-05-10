@@ -1,0 +1,46 @@
+%PDF-1.4
+%DocumentAI-2026 sample
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 429 >>
+stream
+BT
+/F1 20 Tf
+72 742 Td (Employee Document Sample) Tj
+/F1 12 Tf
+0 -36 Td (First Name: Aman) Tj
+0 -20 Td (Last Name: Raj) Tj
+0 -20 Td (Employee #: 2026) Tj
+0 -20 Td (Department: Document AI) Tj
+0 -20 Td (Title: Cloud Engineer) Tj
+0 -20 Td (Email: aman.raj@example.com) Tj
+0 -20 Td (Phone: +1 555 010 2026) Tj
+0 -20 Td (Location: New York, NY) Tj
+0 -32 Td (This sample file is for testing the DocumentAI-2026 upload pipeline.) Tj
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000033 00000 n 
+0000000082 00000 n 
+0000000139 00000 n 
+0000000265 00000 n 
+0000000335 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+815
+%%EOF
