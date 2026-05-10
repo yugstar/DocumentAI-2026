@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build Cloud Function source ZIPs expected by terraform/main.tf (run from repo root: ./scripts/package-functions.sh)
+# Optional: build local Cloud Run function source ZIPs for inspection.
+# Terraform now generates these archives automatically via the archive provider.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TF_DIR="${ROOT}/terraform"

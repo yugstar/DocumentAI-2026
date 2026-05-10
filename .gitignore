@@ -1,8 +1,11 @@
 .terraform/
+__pycache__/
+*.py[cod]
 *.tfstate
 *.tfstate.*
 crash.log
 override.tf
 terraform.tfvars
 terraform/*.zip
+terraform/.generated/
 .idea/

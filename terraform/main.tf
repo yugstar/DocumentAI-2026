@@ -8,7 +8,18 @@ data "google_project" "current" {
   project_id = var.project_name
 }
 
-# Gen1 Cloud Functions read build metadata from Artifact Registry (gcf-artifacts).
+data "google_storage_project_service_account" "gcs_account" {
+  project    = var.project_name
+  depends_on = [module.project_services]
+}
+
+resource "google_service_account" "function_runtime" {
+  account_id   = "document-ai-functions"
+  display_name = "Document AI Cloud Run functions runtime"
+  depends_on   = [module.project_services]
+}
+
+# Cloud Functions read build metadata from Artifact Registry (gcf-artifacts).
 resource "google_project_iam_member" "gcf_artifact_registry_reader" {
   project    = var.project_name
   role       = "roles/artifactregistry.reader"
@@ -45,7 +56,8 @@ module "project_services" {
     "cloudbuild.googleapis.com",
     "artifactregistry.googleapis.com",
     "iam.googleapis.com",
-    "serviceusage.googleapis.com"
+    "serviceusage.googleapis.com",
+    "eventarc.googleapis.com"
   ]
 
   disable_services_on_destroy = false
@@ -96,6 +108,12 @@ resource "google_storage_bucket_iam_member" "run_can_upload_to_source" {
   member = "serviceAccount:${data.google_project.current.number}-compute@developer.gserviceaccount.com"
 }
 
+resource "google_storage_bucket_iam_member" "function_can_read_source_bucket" {
+  bucket = google_storage_bucket.bucket.name
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.function_runtime.email}"
+}
+
 resource "google_project_iam_member" "run_can_use_firestore" {
   project    = var.project_name
   role       = "roles/datastore.user"
@@ -103,37 +121,118 @@ resource "google_project_iam_member" "run_can_use_firestore" {
   depends_on = [module.project_services]
 }
 
-resource "google_storage_bucket_object" "archive" {
-  name   = "document-processor.zip"
-  bucket = google_storage_bucket.archive.name
-  source = "./document-processor.zip"
+resource "google_project_iam_member" "function_can_use_documentai" {
+  project    = var.project_name
+  role       = "roles/documentai.apiUser"
+  member     = "serviceAccount:${google_service_account.function_runtime.email}"
+  depends_on = [module.project_services]
 }
 
-resource "google_cloudfunctions_function" "function" {
-  name                  = "document-processor"
-  runtime               = "python39"
-  source_archive_bucket = google_storage_bucket.archive.name
-  source_archive_object = google_storage_bucket_object.archive.name
+resource "google_project_iam_member" "function_can_use_firestore" {
+  project    = var.project_name
+  role       = "roles/datastore.user"
+  member     = "serviceAccount:${google_service_account.function_runtime.email}"
+  depends_on = [module.project_services]
+}
 
-  event_trigger {
-    event_type = "google.storage.object.finalize"
-    resource   = google_storage_bucket.bucket.name
-  }
-  entry_point = "main"
+resource "google_project_iam_member" "function_can_publish_pubsub" {
+  project    = var.project_name
+  role       = "roles/pubsub.publisher"
+  member     = "serviceAccount:${google_service_account.function_runtime.email}"
+  depends_on = [module.project_services]
+}
+
+resource "google_project_iam_member" "function_eventarc_receiver" {
+  project    = var.project_name
+  role       = "roles/eventarc.eventReceiver"
+  member     = "serviceAccount:${google_service_account.function_runtime.email}"
+  depends_on = [module.project_services]
+}
+
+resource "google_project_iam_member" "function_can_receive_events" {
+  project    = var.project_name
+  role       = "roles/run.invoker"
+  member     = "serviceAccount:${google_service_account.function_runtime.email}"
+  depends_on = [module.project_services]
+}
+
+resource "google_project_iam_member" "gcs_can_publish_eventarc_events" {
+  project    = var.project_name
+  role       = "roles/pubsub.publisher"
+  member     = "serviceAccount:${data.google_storage_project_service_account.gcs_account.email_address}"
+  depends_on = [module.project_services]
+}
+
+data "archive_file" "document_processor" {
+  type        = "zip"
+  source_dir  = "${path.module}/../Document-processing-function"
+  output_path = "${path.module}/document-processor.zip"
+}
+
+resource "google_storage_bucket_object" "archive" {
+  name   = "document-processor-${data.archive_file.document_processor.output_md5}.zip"
+  bucket = google_storage_bucket.archive.name
+  source = data.archive_file.document_processor.output_path
+}
+
+resource "google_cloudfunctions2_function" "document_processor" {
+  name        = "document-processor"
+  location    = var.region
+  description = "Processes uploaded documents with Document AI and writes Firestore records."
   labels = {
     app = "document-ai"
   }
 
-  environment_variables = {
-    ALERT_TOPIC             = google_pubsub_topic.alert-topic.name
-    PROJECT_ID              = var.project_name
-    DOCUMENTAI_LOCATION     = var.documentai_location
-    DOCUMENTAI_PROCESSOR_ID = var.documentai_processor_id
+  build_config {
+    runtime     = var.function_runtime
+    entry_point = "main"
+
+    source {
+      storage_source {
+        bucket = google_storage_bucket.archive.name
+        object = google_storage_bucket_object.archive.name
+      }
+    }
   }
-  # google_cloudfunctions_function requires a static depends_on list (no concat/conditionals).
+
+  service_config {
+    min_instance_count             = var.function_min_instances
+    max_instance_count             = var.function_max_instances
+    available_memory               = var.function_memory
+    timeout_seconds                = var.document_processor_timeout_seconds
+    all_traffic_on_latest_revision = true
+    service_account_email          = google_service_account.function_runtime.email
+
+    environment_variables = {
+      ALERT_TOPIC             = google_pubsub_topic.alert-topic.name
+      PROJECT_ID              = var.project_name
+      DOCUMENTAI_LOCATION     = var.documentai_location
+      DOCUMENTAI_PROCESSOR_ID = var.documentai_processor_id
+    }
+  }
+
+  event_trigger {
+    trigger_region        = var.region
+    event_type            = "google.cloud.storage.object.v1.finalized"
+    retry_policy          = "RETRY_POLICY_RETRY"
+    service_account_email = google_service_account.function_runtime.email
+
+    event_filters {
+      attribute = "bucket"
+      value     = google_storage_bucket.bucket.name
+    }
+  }
+
   depends_on = [
     module.project_services,
     google_project_iam_member.gcf_artifact_registry_reader,
+    google_project_iam_member.function_can_use_documentai,
+    google_project_iam_member.function_can_use_firestore,
+    google_project_iam_member.function_can_publish_pubsub,
+    google_project_iam_member.function_eventarc_receiver,
+    google_project_iam_member.function_can_receive_events,
+    google_project_iam_member.gcs_can_publish_eventarc_events,
+    google_storage_bucket_iam_member.function_can_read_source_bucket,
     google_pubsub_topic.alert-topic,
     google_storage_bucket_object.archive,
   ]
@@ -268,33 +367,64 @@ resource "google_cloud_run_service_iam_member" "allUsers2" {
 #----------------------------------------------------------------------------------------------
 
 
+data "archive_file" "id_cards" {
+  type        = "zip"
+  source_dir  = "${path.module}/../id-cards-function"
+  output_path = "${path.module}/id-cards.zip"
+}
+
 resource "google_storage_bucket_object" "archive2" {
   bucket = google_storage_bucket.archive.name
-  name   = "id-cards"
-  source = "id-cards.zip"
+  name   = "id-cards-${data.archive_file.id_cards.output_md5}.zip"
+  source = data.archive_file.id_cards.output_path
 }
 
 
-resource "google_cloudfunctions_function" "id-cards" {
-  name                  = "id-cards"
-  runtime               = "python39"
-  source_archive_bucket = google_storage_bucket.archive.name
-  source_archive_object = google_storage_bucket_object.archive2.name
+resource "google_cloudfunctions2_function" "id_cards" {
+  name        = "id-cards"
+  location    = var.region
+  description = "Verifies the REST API after a document record is processed."
+
+  build_config {
+    runtime     = var.function_runtime
+    entry_point = "hello_pubsub"
+
+    source {
+      storage_source {
+        bucket = google_storage_bucket.archive.name
+        object = google_storage_bucket_object.archive2.name
+      }
+    }
+  }
+
+  service_config {
+    min_instance_count             = var.function_min_instances
+    max_instance_count             = var.function_max_instances
+    available_memory               = var.function_memory
+    timeout_seconds                = var.id_cards_timeout_seconds
+    all_traffic_on_latest_revision = true
+    service_account_email          = google_service_account.function_runtime.email
+
+    environment_variables = {
+      SERVICE_URL = google_cloud_run_service.restapi.status[0].url
+    }
+  }
 
   event_trigger {
-    event_type = "google.pubsub.topic.publish"
-    resource   = google_pubsub_topic.alert-topic.name
-  }
-  entry_point = "hello_pubsub"
-  environment_variables = {
-    SERVICE_URL = google_cloud_run_service.restapi.status[0].url
+    trigger_region        = var.region
+    event_type            = "google.cloud.pubsub.topic.v1.messagePublished"
+    pubsub_topic          = google_pubsub_topic.alert-topic.id
+    retry_policy          = "RETRY_POLICY_RETRY"
+    service_account_email = google_service_account.function_runtime.email
   }
 
   depends_on = [
     module.project_services,
     google_project_iam_member.gcf_artifact_registry_reader,
+    google_project_iam_member.function_eventarc_receiver,
+    google_project_iam_member.function_can_receive_events,
     google_cloud_run_service.restapi,
     google_storage_bucket_object.archive2,
-    google_cloudfunctions_function.function,
+    google_cloudfunctions2_function.document_processor,
   ]
 }

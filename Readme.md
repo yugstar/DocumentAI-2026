@@ -2,7 +2,7 @@
 Following components are used
 * Document AI
 * Pub/Sub
-* Cloud Function
+* Cloud Run functions
 * Cloud Firestore
 * Cloud Storage
 * Cloud Run

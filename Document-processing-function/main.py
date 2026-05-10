@@ -4,6 +4,7 @@ import mimetypes
 import os
 import re
 
+import functions_framework
 from google.api_core.client_options import ClientOptions
 from google.cloud import documentai_v1 as documentai
 from google.cloud import firestore
@@ -23,17 +24,20 @@ documentai_processor_id = os.environ.get("DOCUMENTAI_PROCESSOR_ID")
 TEXT_LIMIT = 150_000
 
 
-def main(event, context):
-    """Triggered by a finalized object in Cloud Storage."""
-    bucket = event["bucket"]
-    file_name = event["name"]
+@functions_framework.cloud_event
+def main(cloud_event):
+    """Triggered by a Cloud Storage finalized-object CloudEvent."""
+    event_data = cloud_event.data or {}
+    bucket = event_data["bucket"]
+    file_name = event_data["name"]
+    generation = str(event_data.get("generation") or "")
     uri = f"gs://{bucket}/{file_name}"
-    mime_type = event.get("contentType") or mimetypes.guess_type(file_name)[0] or "application/pdf"
+    mime_type = event_data.get("contentType") or mimetypes.guess_type(file_name)[0] or "application/pdf"
 
     processed = process_document(input_uri=uri, mime_type=mime_type)
     fields = processed["fields"]
-    event_id = getattr(context, "event_id", "") or event.get("id", "")
-    record_id = build_record_id(file_name, event_id, fields)
+    event_id = cloud_event["id"]
+    record_id = build_record_id(file_name, generation or event_id, fields)
 
     first_name = lookup_field(fields, "First Name")
     last_name = lookup_field(fields, "Last Name")
@@ -49,10 +53,13 @@ def main(event, context):
         "text_truncated": len(processed["text"]) > TEXT_LIMIT,
         "source_bucket": bucket,
         "source_file": file_name,
+        "source_generation": generation,
         "gcs_uri": uri,
         "mime_type": mime_type,
         "document_ai_location": documentai_location,
         "document_ai_processor_id": documentai_processor_id,
+        "cloud_event_id": event_id,
+        "cloud_event_type": cloud_event["type"],
         "created_at": firestore.SERVER_TIMESTAMP,
     }
 
